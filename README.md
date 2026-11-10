@@ -70,8 +70,8 @@ npm run ios:build
 
 | 파일 | 대상 | 비고 |
 | --- | --- | --- |
-| `종이결-1.0.0-android.apk` | Android 7.0+ 태블릿 | 릴리스 키로 서명됨. 바로 설치 가능 |
-| `종이결-1.0.0-ios-unsigned.ipa` | iPadOS 15+ | 서명 전 IPA. 아래 iOS 설치 방법으로 본인 Apple ID로 서명 필요 |
+| `jongigyeol-1.0.0-android.apk` | Android 7.0+ 태블릿 | 릴리스 키로 서명됨. 바로 설치 가능 |
+| `jongigyeol-1.0.0-ios-unsigned.ipa` | iPadOS 15+ | 서명 전 IPA. 아래 iOS 설치 방법으로 본인 Apple ID로 서명 필요 |
 
 패키지 이름은 `app.jongigyeol.note`, 버전은 `1.0.0`입니다.
 
@@ -96,7 +96,7 @@ npm run ios:build
 
 **방법 2 — Sideloadly / AltStore 사용**
 
-서명된 IPA가 아니라면 Sideloadly 같은 도구에 `종이결-1.0.0-ios-unsigned.ipa`와 Apple ID를 넣어 서명·설치할 수 있습니다. 이 경우에도 무료 계정은 7일 제한이 있습니다.
+서명된 IPA가 아니라면 Sideloadly 같은 도구에 `jongigyeol-1.0.0-ios-unsigned.ipa`와 Apple ID를 넣어 서명·설치할 수 있습니다. 이 경우에도 무료 계정은 7일 제한이 있습니다.
 
 ## 태블릿에 설치 (PWA)
 
