@@ -2474,6 +2474,48 @@ button:disabled {
   line-height: 1.6;
 }
 
+.dictation-helpbox {
+  padding: 13px 15px 14px;
+  border-radius: 12px;
+  background: rgba(176, 142, 74, 0.09);
+  border: 1px solid rgba(176, 142, 74, 0.22);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.dictation-helpbox-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 6px;
+  color: var(--ink);
+}
+
+.dictation-helpbox ul {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 2px;
+}
+
+.dictation-helpbox li::marker {
+  color: rgba(25, 25, 21, 0.35);
+}
+
+.dictation-helpbox-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.dictation-helpbox-actions .btn {
+  height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
 .dictation-options {
   display: flex;
   flex-direction: column;

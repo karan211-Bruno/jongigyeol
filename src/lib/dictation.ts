@@ -28,6 +28,61 @@ export function isSpeechSupported(): boolean {
   return Boolean(w.SpeechRecognition || w.webkitSpeechRecognition);
 }
 
+export type DictationProblem = 'permission' | 'device' | 'insecure' | 'network' | 'unsupported';
+
+/** 오류 문구로부터 사용자가 무엇을 해야 하는지 분류합니다. */
+export function classifyDictationError(message: string): DictationProblem | null {
+  if (/권한|not-allowed|notallowed|denied|거부/i.test(message)) return 'permission';
+  if (/마이크를 찾|notfound|audio-capture|연결되어 있는지/i.test(message)) return 'device';
+  if (/https|보안|secure/i.test(message)) return 'insecure';
+  if (/인터넷|network|연결을 확인/i.test(message)) return 'network';
+  if (/사용할 수 없|지원하지/i.test(message)) return 'unsupported';
+  return null;
+}
+
+/**
+ * 웹에서 음성 인식을 시작하기 전에 마이크 권한을 먼저 확인합니다.
+ * 사용자가 마이크 버튼을 누른 직후에 호출해야 브라우저가 권한 창을 띄웁니다.
+ */
+export async function ensureMicrophoneAccess(): Promise<void> {
+  if (typeof window === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+    throw new Error('이 브라우저에서는 마이크를 사용할 수 없습니다. Chrome·Edge 최신 버전에서 열어 주세요.');
+  }
+  if (!window.isSecureContext) {
+    throw new Error('마이크는 HTTPS 또는 localhost에서만 사용할 수 있습니다.');
+  }
+
+  let state: PermissionState | 'unknown' = 'unknown';
+  try {
+    state = (await navigator.permissions.query({ name: 'microphone' as PermissionName })).state;
+  } catch {
+    /* 권한 조회를 지원하지 않는 브라우저는 아래에서 직접 요청합니다. */
+  }
+  if (state === 'granted') return;
+  if (state === 'denied') {
+    throw new Error('마이크 권한이 거부되어 있습니다. 주소창의 사이트 설정에서 마이크를 허용해 주세요.');
+  }
+
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (error) {
+    const name = error instanceof DOMException ? error.name : '';
+    if (name === 'NotAllowedError' || name === 'SecurityError') {
+      throw new Error('마이크 권한이 거부되었습니다. 주소창의 사이트 설정에서 마이크를 허용해 주세요.');
+    }
+    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+      throw new Error('마이크를 찾을 수 없습니다. 기기에 마이크가 연결되어 있는지 확인해 주세요.');
+    }
+    if (name === 'NotReadableError' || name === 'TrackStartError') {
+      throw new Error('마이크를 다른 앱이 사용 중입니다. 사용 중인 앱을 닫고 다시 시도해 주세요.');
+    }
+    throw new Error('마이크를 시작하지 못했습니다. 브라우저 설정을 확인해 주세요.');
+  }
+  // 권한 확인용 스트림은 바로 닫습니다. 음성 인식 엔진이 자체적으로 마이크를 엽니다.
+  stream.getTracks().forEach((track) => track.stop());
+}
+
 function joinText(a: string, b: string): string {
   const left = a.trim();
   const right = b.trim();
@@ -297,9 +352,21 @@ class WebDictationSession implements DictationSession {
     recognition.onerror = (event) => {
       if (event.error === 'no-speech' || event.error === 'aborted') return;
       if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-        this.callbacks.onError('마이크와 음성 인식 권한이 필요합니다. 브라우저 설정에서 허용해 주세요.');
         this.active = false;
         this.callbacks.onStatus('error');
+        this.callbacks.onError('마이크 권한이 거부되었습니다. 주소창의 사이트 설정에서 마이크를 허용한 뒤 다시 시도해 주세요.');
+        return;
+      }
+      if (event.error === 'audio-capture') {
+        this.active = false;
+        this.callbacks.onStatus('error');
+        this.callbacks.onError('마이크를 찾을 수 없습니다. 기기에 마이크가 연결되어 있는지 확인해 주세요.');
+        return;
+      }
+      if (event.error === 'network') {
+        this.active = false;
+        this.callbacks.onStatus('error');
+        this.callbacks.onError('음성 인식 서버에 연결하지 못했습니다. 인터넷 연결을 확인해 주세요.');
         return;
       }
       this.callbacks.onError(event.message || `음성 인식 오류: ${event.error}`);
@@ -324,6 +391,9 @@ class WebDictationSession implements DictationSession {
 
   async start(): Promise<void> {
     this.callbacks.onStatus('starting');
+    // 마이크 권한을 먼저 요청해야 브라우저가 권한 창을 띄우고,
+    // 거부된 경우 음성 인식 엔진을 띄우지 않고 바로 안내할 수 있습니다.
+    await ensureMicrophoneAccess();
     this.recognition = this.create();
     this.active = true;
     try {

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { Icon } from './Icon';
 import { Segmented, Sheet, Toggle, useToast } from './ui';
-import { createDictationSession, isSpeechSupported, type DictationSession, type DictationStatus } from '../lib/dictation';
+import { createDictationSession, classifyDictationError, isSpeechSupported, type DictationProblem, type DictationSession, type DictationStatus } from '../lib/dictation';
 import { AudioRecorderSession, preparePlayback, type RecordingResult } from '../lib/recorder';
+import { isNativeApp } from '../lib/native';
 
 type Language = 'ko-KR' | 'en-US';
 
@@ -50,6 +51,7 @@ export function DictationSheet({ open, onClose, onInsert, onSaveAudio }: Props) 
   const [recording, setRecording] = useState<RecordingResult | null>(null);
   const [recordingNote, setRecordingNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [help, setHelp] = useState<DictationProblem | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -111,6 +113,28 @@ export function DictationSheet({ open, onClose, onInsert, onSaveAudio }: Props) 
     setAudioUrl(null);
   };
 
+  const showError = (message: string) => {
+    if (!mountedRef.current) return;
+    setError(message);
+    setHelp(classifyDictationError(message));
+  };
+
+  // 음성 인식이 치명적으로 실패하면 타이머와 녹음을 함께 정리합니다.
+  useEffect(() => {
+    if (status !== 'error') return;
+    clearTimers();
+    setLevel(0);
+    const recorder = recorderRef.current;
+    if (recorder) {
+      recorderRef.current = null;
+      setRecordingActive(false);
+      void recorder.cancel();
+    }
+    setRecordingNote(null);
+    // clearTimers는 매 렌더 새로 만들어지지만 status가 바뀔 때만 정리하면 됩니다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
+
   const reset = () => {
     clearTimers();
     sessionRef.current = null;
@@ -124,6 +148,7 @@ export function DictationSheet({ open, onClose, onInsert, onSaveAudio }: Props) 
     setRecording(null);
     setRecordingNote(null);
     setError(null);
+    setHelp(null);
     clearAudioUrl();
   };
 
@@ -161,6 +186,7 @@ export function DictationSheet({ open, onClose, onInsert, onSaveAudio }: Props) 
 
   const start = async () => {
     setError(null);
+    setHelp(null);
     setRecordingNote(null);
     clearAudioUrl();
     setRecording(null);
@@ -169,7 +195,7 @@ export function DictationSheet({ open, onClose, onInsert, onSaveAudio }: Props) 
     updateText('');
 
     if (!isSpeechSupported()) {
-      setError('이 환경에서는 음성 인식을 사용할 수 없습니다. 앱(iOS/Android)에서 사용해 주세요.');
+      showError('이 환경에서는 음성 인식을 사용할 수 없습니다. Chrome·Edge 또는 앱(iOS/Android)에서 사용해 주세요.');
       setStatus('error');
       return;
     }
@@ -185,7 +211,7 @@ export function DictationSheet({ open, onClose, onInsert, onSaveAudio }: Props) 
         if (mountedRef.current) setStatus(next);
       },
       onError: (message: string) => {
-        if (mountedRef.current) setError(message);
+        showError(message);
       },
     };
 
@@ -198,7 +224,7 @@ export function DictationSheet({ open, onClose, onInsert, onSaveAudio }: Props) 
         recorderStarted = true;
         setRecordingActive(true);
       } catch {
-        setRecordingNote('녹음을 시작하지 못해 글로만 받아쓰기합니다. 마이크 권한을 확인해 주세요.');
+        setRecordingNote('녹음은 켜지 못했습니다. 받아쓰기만 계속합니다.');
       }
     }
 
@@ -222,7 +248,7 @@ export function DictationSheet({ open, onClose, onInsert, onSaveAudio }: Props) 
           await session.start();
         } catch (retryError) {
           setStatus('error');
-          setError(
+          showError(
             retryError instanceof Error
               ? retryError.message
               : firstError instanceof Error
@@ -233,7 +259,7 @@ export function DictationSheet({ open, onClose, onInsert, onSaveAudio }: Props) 
         }
       } else {
         setStatus('error');
-        setError(firstError instanceof Error ? firstError.message : '음성 인식을 시작하지 못했습니다.');
+        showError(firstError instanceof Error ? firstError.message : '음성 인식을 시작하지 못했습니다.');
         return;
       }
     }
@@ -313,6 +339,63 @@ export function DictationSheet({ open, onClose, onInsert, onSaveAudio }: Props) 
             ? '받아쓰기를 시작하지 못했습니다'
             : '마이크를 눌러 시작하세요';
 
+  const native = isNativeApp();
+  const helpContent: Record<DictationProblem, { title: string; lines: string[] }> = {
+    permission: {
+      title: '마이크를 허용하는 방법',
+      lines: native
+        ? [
+            '기기 설정 → 종이결 → 마이크 권한을 허용합니다.',
+            'iOS는 설정 앱 → 개인정보 보호 및 보안 → 마이크, Android는 설정 → 앱 → 종이결 → 권한에서 허용합니다.',
+            '허용한 뒤 아래 “권한 다시 요청”을 누릅니다.',
+          ]
+        : [
+            '주소창 왼쪽의 자물쇠(사이트 설정) 아이콘을 누릅니다.',
+            "마이크를 '허용'으로 바꾸고 페이지를 새로 고칩니다.",
+            'iPad·iPhone은 설정 앱 → Safari → 마이크에서 허용할 수 있습니다.',
+            '허용한 뒤 아래 “권한 다시 요청”을 누르면 바로 시작됩니다.',
+          ],
+    },
+    device: {
+      title: '마이크를 찾을 수 없습니다',
+      lines: [
+        '마이크나 헤드셋이 기기에 제대로 연결되어 있는지 확인합니다.',
+        '다른 앱이 마이크를 사용 중이면 그 앱을 닫습니다.',
+        '그래도 안 되면 기기를 다시 시작한 뒤 시도합니다.',
+      ],
+    },
+    insecure: {
+      title: '보안 연결이 필요합니다',
+      lines: [
+        '마이크는 HTTPS 주소 또는 localhost에서만 사용할 수 있습니다.',
+        'http:// 주소로 열었다면 https:// 주소나 설치한 앱에서 사용해 주세요.',
+      ],
+    },
+    network: {
+      title: '음성 인식 서버에 연결하지 못했습니다',
+      lines: [
+        '인터넷 연결을 확인한 뒤 다시 시도합니다.',
+        'Chrome의 음성 인식은 인터넷 연결이 필요합니다.',
+        '오프라인에서는 글을 직접 입력해 주세요.',
+      ],
+    },
+    unsupported: {
+      title: '이 환경에서는 받아쓰기를 쓸 수 없습니다',
+      lines: native
+        ? [
+            '기기 설정에서 음성 인식(받아쓰기)이 켜져 있는지 확인합니다.',
+            '기기의 음성 인식 언어에 한국어가 추가되어 있는지 확인합니다.',
+            '아래 글 상자에 직접 입력해 페이지에 넣을 수도 있습니다.',
+          ]
+        : [
+            'Chrome 또는 Edge 최신 버전에서 열어 주세요.',
+            'iPad·Android에서는 종이결 앱의 받아쓰기를 사용해 주세요.',
+            '아래 글 상자에 직접 입력해 페이지에 넣을 수도 있습니다.',
+          ],
+    },
+  };
+  const helpInfo = help ? helpContent[help] : null;
+
   return (
     <Sheet open={open} title="받아쓰기" onClose={handleClose} wide>
       <div className="dictation">
@@ -353,6 +436,33 @@ export function DictationSheet({ open, onClose, onInsert, onSaveAudio }: Props) 
           <p className="dictation-error" role="alert">
             {error}
           </p>
+        ) : null}
+        {helpInfo ? (
+          <div className="dictation-helpbox" role="note">
+            <div className="dictation-helpbox-head">
+              <Icon name="info" size={16} />
+              <strong>{helpInfo.title}</strong>
+            </div>
+            <ul>
+              {helpInfo.lines.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+            <div className="dictation-helpbox-actions">
+              <button type="button" className="btn ghost" onClick={() => void start()} disabled={busy}>
+                <Icon name="mic" size={15} />
+                권한 다시 요청
+              </button>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => document.getElementById('dictation-text')?.focus()}
+              >
+                <Icon name="pencil" size={15} />
+                직접 입력
+              </button>
+            </div>
+          </div>
         ) : null}
         {recordingNote ? <p className="dictation-note">{recordingNote}</p> : null}
 

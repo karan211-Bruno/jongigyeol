@@ -1,7 +1,7 @@
 {
   "name": "jongigyeol",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.1.1",
   "type": "module",
   "description": "iPad와 Android 태블릿을 위한 종이 같은 필기 노트.",
   "scripts": {

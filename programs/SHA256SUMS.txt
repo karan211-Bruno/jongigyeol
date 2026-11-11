@@ -1,3 +1,3 @@
-f0445646cff39a80f9e89b539dde7be55856d3cd5f49fc4e19f5c544c0c1038e  jongigyeol-1.1.0-android.apk
-a000743a7721022a3685f78f0450bc3c022aa1cceaaf6fd0a02d46444926f5ab  jongigyeol-1.1.0-ios-unsigned.ipa
-0a31a9682784f1a63400773dcbb456f345caa2b8933f3b425dc617cce4b8a7ca  jongigyeol-1.1.0-source.zip
+3dd762d4148e12083c06488a875d69b2f9c58c758207d05736f02e499065ddc4  jongigyeol-1.1.1-android.apk
+c85cfce62dbff1d6f6426bf1e550f5205fcbb61d169c597adbb4d91f9d95f630  jongigyeol-1.1.1-ios-unsigned.ipa
+37c3a6c4ae8a5d0e2d36dede0fabd9e3d763a4673b22afa5ff474dfe3651adb5  jongigyeol-1.1.1-source.zip
