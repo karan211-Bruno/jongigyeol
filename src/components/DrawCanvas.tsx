@@ -7,9 +7,11 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
-import type { Page, PenSettings, Stroke } from '../types';
+import type { Page, PenSettings, Stroke, TextBlock } from '../types';
 import { drawImageContain, drawPaper, drawStroke, drawStrokes, loadImage, strokesHitBy } from '../lib/paper';
+import { TEXT_FONT, TEXT_LINE_HEIGHT } from '../lib/text';
 import { uid } from '../lib/id';
+import { Icon } from './Icon';
 
 const RES = 2;
 
@@ -25,6 +27,10 @@ interface Props {
   onCommit: (stroke: Stroke) => void;
   onErase: (ids: string[]) => void;
   onScale?: (scale: number) => void;
+  onTextMove: (block: TextBlock, x: number, y: number) => void;
+  onTextEdit: (block: TextBlock) => void;
+  onTextDelete: (block: TextBlock) => void;
+  onTextPlay: (block: TextBlock) => void;
 }
 
 type Mode = 'idle' | 'draw' | 'erase' | 'pan' | 'pinch';
@@ -36,7 +42,7 @@ interface Pt {
 }
 
 export const DrawCanvas = forwardRef<CanvasHandle, Props>(function DrawCanvas(
-  { page, settings, onCommit, onErase, onScale },
+  { page, settings, onCommit, onErase, onScale, onTextMove, onTextEdit, onTextDelete, onTextPlay },
   ref,
 ) {
   const stageRef = useRef<HTMLDivElement>(null);
@@ -44,6 +50,7 @@ export const DrawCanvas = forwardRef<CanvasHandle, Props>(function DrawCanvas(
   const bgRef = useRef<HTMLCanvasElement>(null);
   const inkRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
+  const [selectedText, setSelectedText] = useState<string | null>(null);
 
   const vp = useRef({ s: 1, x: 0, y: 0 });
   const [scaleLabel, setScaleLabel] = useState(1);
@@ -143,6 +150,7 @@ export const DrawCanvas = forwardRef<CanvasHandle, Props>(function DrawCanvas(
 
   // Size the canvases once per page.
   useEffect(() => {
+    setSelectedText(null);
     for (const c of [bgRef.current, inkRef.current, overlayRef.current]) {
       if (!c) continue;
       c.width = Math.round(page.width * RES);
@@ -173,7 +181,7 @@ export const DrawCanvas = forwardRef<CanvasHandle, Props>(function DrawCanvas(
     return () => {
       cancelled = true;
     };
-  }, [page.template, page.background, page.width, page.height]);
+  }, [page.id, page.template, page.background, page.width, page.height]);
 
   // Committed ink layer, with a fast path for one new stroke.
   useEffect(() => {
@@ -363,6 +371,7 @@ export const DrawCanvas = forwardRef<CanvasHandle, Props>(function DrawCanvas(
     (e: ReactPointerEvent) => {
       const stage = stageRef.current;
       if (!stage) return;
+      setSelectedText(null);
       try {
         (e.target as Element).setPointerCapture?.(e.pointerId);
       } catch {
@@ -564,6 +573,16 @@ export const DrawCanvas = forwardRef<CanvasHandle, Props>(function DrawCanvas(
         <canvas ref={bgRef} className="layer" />
         <canvas ref={inkRef} className="layer" />
         <canvas ref={overlayRef} className="layer" />
+        <TextLayer
+          page={page}
+          scale={scaleLabel}
+          selectedId={selectedText}
+          onSelect={setSelectedText}
+          onMove={onTextMove}
+          onEdit={onTextEdit}
+          onDelete={onTextDelete}
+          onPlay={onTextPlay}
+        />
       </div>
       <div className="stage-readout" aria-hidden="true">
         {Math.round(scaleLabel * 100)}%
@@ -571,3 +590,201 @@ export const DrawCanvas = forwardRef<CanvasHandle, Props>(function DrawCanvas(
     </div>
   );
 });
+
+/* -------------------------------- text layer ------------------------------- */
+
+interface TextLayerProps {
+  page: Page;
+  /** 현재 화면 배율. 도구 막대가 작아지지 않도록 역보정합니다. */
+  scale: number;
+  selectedId: string | null;
+  onSelect: (id: string | null) => void;
+  onMove: (block: TextBlock, x: number, y: number) => void;
+  onEdit: (block: TextBlock) => void;
+  onDelete: (block: TextBlock) => void;
+  onPlay: (block: TextBlock) => void;
+}
+
+interface TextDrag {
+  id: string;
+  startX: number;
+  startY: number;
+  origX: number;
+  origY: number;
+  width: number;
+  scale: number;
+  x: number;
+  y: number;
+  moved: boolean;
+}
+
+function TextLayer({
+  page,
+  scale,
+  selectedId,
+  onSelect,
+  onMove,
+  onEdit,
+  onDelete,
+  onPlay,
+}: TextLayerProps) {
+  const [drag, setDrag] = useState<TextDrag | null>(null);
+  const dragRef = useRef<TextDrag | null>(null);
+  const lastTap = useRef({ id: '', at: 0 });
+  const blocks = page.textBlocks ?? [];
+
+  const setDragState = useCallback((next: TextDrag | null) => {
+    dragRef.current = next;
+    setDrag(next);
+  }, []);
+
+  const clamp = (value: number, min: number, max: number) =>
+    Math.max(min, Math.min(Math.max(min, max), value));
+
+  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>, block: TextBlock) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* synthetic pointer */
+    }
+    const paper = e.currentTarget.closest('.paper') as HTMLElement | null;
+    const rect = paper?.getBoundingClientRect();
+    const currentScale = rect && rect.width ? rect.width / page.width : 1;
+    const now = performance.now();
+    const doubleTap = lastTap.current.id === block.id && now - lastTap.current.at < 380;
+    lastTap.current = { id: block.id, at: now };
+    onSelect(block.id);
+    if (doubleTap) {
+      setDragState(null);
+      onEdit(block);
+      return;
+    }
+    setDragState({
+      id: block.id,
+      startX: e.clientX,
+      startY: e.clientY,
+      origX: block.x,
+      origY: block.y,
+      width: block.width,
+      scale: currentScale,
+      x: block.x,
+      y: block.y,
+      moved: false,
+    });
+  };
+
+  const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const active = dragRef.current;
+    if (!active) return;
+    e.stopPropagation();
+    const dx = (e.clientX - active.startX) / active.scale;
+    const dy = (e.clientY - active.startY) / active.scale;
+    const x = clamp(active.origX + dx, 8, page.width - active.width - 8);
+    const y = clamp(active.origY + dy, 8, page.height - 30);
+    setDragState({
+      ...active,
+      x,
+      y,
+      moved: active.moved || Math.abs(dx) + Math.abs(dy) > 2,
+    });
+  };
+
+  const onPointerUp = (e: ReactPointerEvent<HTMLDivElement>, block: TextBlock) => {
+    const active = dragRef.current;
+    if (!active || active.id !== block.id) {
+      setDragState(null);
+      return;
+    }
+    e.stopPropagation();
+    if (active.moved) onMove(block, active.x, active.y);
+    setDragState(null);
+  };
+
+  if (!blocks.length) return null;
+
+  // 화면 배율이 작아져도 편집 도구는 같은 크기로 보이게 합니다.
+  const toolScale = 1 / Math.max(0.32, Math.min(1.6, scale));
+
+  return (
+    <div className="text-layer">
+      {blocks.map((block) => {
+        const active = drag?.id === block.id;
+        const x = active ? drag.x : block.x;
+        const y = active ? drag.y : block.y;
+        return (
+          <div
+            key={block.id}
+            className={`text-block ${selectedId === block.id ? 'is-on' : ''} ${active ? 'is-drag' : ''}`}
+            style={{
+              left: x,
+              top: y,
+              width: block.width,
+              fontSize: block.fontSize,
+              lineHeight: TEXT_LINE_HEIGHT,
+              color: block.color,
+              fontFamily: TEXT_FONT,
+              textAlign: block.align,
+            }}
+            onPointerDown={(e) => onPointerDown(e, block)}
+            onPointerMove={onPointerMove}
+            onPointerUp={(e) => onPointerUp(e, block)}
+            onPointerCancel={(e) => onPointerUp(e, block)}
+            onLostPointerCapture={() => setDragState(null)}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            {block.text}
+            {selectedId === block.id ? (
+              <div
+                className="text-tools"
+                style={{ transform: `scale(${toolScale})` }}
+                onPointerDown={(e) => e.stopPropagation()}
+                onPointerMove={(e) => e.stopPropagation()}
+                onPointerUp={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onEdit(block);
+                  }}
+                  aria-label="글 편집"
+                  title="글 편집"
+                >
+                  <Icon name="pencil" size={14} />
+                </button>
+                {block.audioId ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onPlay(block);
+                    }}
+                    aria-label="녹음 재생"
+                    title="녹음 재생"
+                  >
+                    <Icon name="play" size={14} />
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="danger"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete(block);
+                  }}
+                  aria-label="글 삭제"
+                  title="글 삭제"
+                >
+                  <Icon name="trash" size={14} />
+                </button>
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}

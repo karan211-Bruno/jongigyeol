@@ -1,5 +1,6 @@
 import type { Notebook, Page } from '../types';
 import { drawImageContain, drawPaper, drawStrokes, loadImage } from './paper';
+import { drawTextBlocks } from './text';
 import { downloadBlob, safeFilename } from './model';
 import { exportBackup } from './db';
 
@@ -15,6 +16,7 @@ export async function renderPage(page: Page, scale = 2): Promise<HTMLCanvasEleme
     drawImageContain(ctx, img, scale, page.width, page.height);
   }
   drawStrokes(ctx, page.strokes, scale);
+  drawTextBlocks(ctx, page.textBlocks, scale);
   return canvas;
 }
 

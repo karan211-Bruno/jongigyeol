@@ -1,7 +1,7 @@
 {
   "name": "jongigyeol",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "description": "iPad와 Android 태블릿을 위한 종이 같은 필기 노트.",
   "scripts": {
@@ -23,6 +23,8 @@
     "@capacitor/share": "^8.0.3",
     "@capacitor/splash-screen": "^8.0.2",
     "@capacitor/status-bar": "^8.0.4",
+    "@capgo/capacitor-audio-recorder": "^8.3.6",
+    "@capgo/capacitor-speech-recognition": "^8.4.6",
     "@fontsource/gowun-batang": "^5.3.0",
     "idb": "^8.0.4",
     "jspdf": "^4.2.1",

@@ -12,6 +12,27 @@ export interface Stroke {
   points: number[];
 }
 
+/**
+ * 받아쓰기나 직접 입력으로 페이지 위에 올린 글 블록입니다.
+ * 좌표와 크기는 페이지 좌표계(px)를 사용합니다.
+ */
+export interface TextBlock {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  text: string;
+  fontSize: number;
+  color: string;
+  align: 'left' | 'center' | 'right';
+  createdAt: number;
+  updatedAt: number;
+  /** 녹음 파일을 함께 저장한 경우 IndexedDB audio 레코드 id. */
+  audioId?: string;
+  /** 녹음 길이(ms). UI 표시용. */
+  audioDuration?: number;
+}
+
 export interface Page {
   id: string;
   notebookId: string;
@@ -20,6 +41,8 @@ export interface Page {
   /** Raster background (PDF page or photo) as a data URL. */
   background?: string;
   strokes: Stroke[];
+  /** 받아쓰기·입력 글. 이전 버전 페이지에는 없을 수 있습니다. */
+  textBlocks?: TextBlock[];
   width: number;
   height: number;
   createdAt: number;

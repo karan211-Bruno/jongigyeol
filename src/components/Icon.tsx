@@ -32,7 +32,11 @@ export type IconName =
   | 'hand'
   | 'info'
   | 'sparkle'
-  | 'file';
+  | 'file'
+  | 'mic'
+  | 'play'
+  | 'stop'
+  | 'text';
 
 const paths: Record<IconName, React.ReactNode> = {
   pen: (
@@ -207,6 +211,23 @@ const paths: Record<IconName, React.ReactNode> = {
     <>
       <path d="M6 3.5h8l4 4v13H6v-17Z" />
       <path d="M14 3.5v4h4" />
+    </>
+  ),
+  mic: (
+    <>
+      <rect x="9" y="3.2" width="6" height="10.4" rx="3" />
+      <path d="M5.8 11.2a6.2 6.2 0 0 0 12.4 0" />
+      <path d="M12 17.4V21" />
+      <path d="M8.8 21h6.4" />
+    </>
+  ),
+  play: <path d="M8 5.2l11 6.8-11 6.8V5.2Z" />,
+  stop: <rect x="6" y="6" width="12" height="12" rx="2" />,
+  text: (
+    <>
+      <path d="M5 5.5h14" />
+      <path d="M12 5.5V20" />
+      <path d="M8.5 20h7" />
     </>
   ),
 };

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Notebook, Page, PenSettings, Stroke, TemplateId, ToolId } from '../types';
+import type { Notebook, Page, PenSettings, Stroke, TemplateId, TextBlock, ToolId } from '../types';
 import {
   DEFAULT_SETTINGS,
   HIGHLIGHTER_COLORS,
@@ -7,15 +7,35 @@ import {
   TEMPLATES,
   TOOL_LABEL,
 } from '../types';
-import { getNotebook, getPages, removePages, saveNotebook, savePage, savePages } from '../lib/db';
+import {
+  getAudio,
+  getNotebook,
+  getPages,
+  removePages,
+  saveAudio,
+  saveNotebook,
+  savePage,
+  savePages,
+} from '../lib/db';
 import { uid } from '../lib/id';
-import { makePage } from '../lib/model';
+import { makePage, safeFilename } from '../lib/model';
 import { DrawCanvas, type CanvasHandle } from './DrawCanvas';
+import { DictationSheet } from './DictationSheet';
 import { Icon } from './Icon';
 import { Confirm, Menu, Sheet, Spinner, useToast } from './ui';
-import { drawImageContain, drawPaper, drawStrokes, loadImage } from '../lib/paper';
+import { drawImageContain, drawPaper, drawStrokes, loadImage, strokeBounds } from '../lib/paper';
 import { exportNotebookPDF, exportPagePNG } from '../lib/export';
 import { imageFileToDataUrl, pdfToPageImages } from '../lib/pdf';
+import {
+  DEFAULT_TEXT_SIZE,
+  TEXT_MARGIN,
+  drawTextBlocks,
+  makeTextBlock,
+  paginateText,
+  textBlockBottom,
+} from '../lib/text';
+import { audioExtension, preparePlayback, type RecordingResult } from '../lib/recorder';
+import { saveBlob } from '../lib/native';
 
 const SETTINGS_KEY = 'jg-pen-settings';
 
@@ -25,6 +45,18 @@ const SIZES: Record<ToolId, number[]> = {
   highlighter: [14, 22, 32, 44],
   eraser: [16, 26, 38, 54],
 };
+
+function pageContentBottom(page: Page): number {
+  let bottom = page.background ? 96 : 120;
+  for (const stroke of page.strokes) {
+    const box = strokeBounds(stroke);
+    bottom = Math.max(bottom, box.y + box.h);
+  }
+  for (const block of page.textBlocks ?? []) {
+    bottom = Math.max(bottom, textBlockBottom(block));
+  }
+  return bottom;
+}
 
 function loadSettings(): PenSettings {
   let base: PenSettings = { ...DEFAULT_SETTINGS };
@@ -58,6 +90,7 @@ interface Props {
 interface Snapshot {
   pageId: string;
   strokes: Stroke[];
+  textBlocks: TextBlock[];
 }
 
 export function NotebookView({ notebookId, onBack }: Props) {
@@ -78,6 +111,10 @@ export function NotebookView({ notebookId, onBack }: Props) {
   const [saveState, setSaveState] = useState<'saved' | 'saving'>('saved');
   const [scale, setScale] = useState(1);
   const [histTick, setHistTick] = useState(0);
+  const [dictationOpen, setDictationOpen] = useState(false);
+  const [editBlock, setEditBlock] = useState<{ pageId: string; block: TextBlock } | null>(null);
+  const [editText, setEditText] = useState('');
+  const [editSize, setEditSize] = useState(DEFAULT_TEXT_SIZE);
 
   const canvasRef = useRef<CanvasHandle>(null);
   const pagesRef = useRef<Page[]>([]);
@@ -90,6 +127,7 @@ export function NotebookView({ notebookId, onBack }: Props) {
   const railRef = useRef<HTMLDivElement>(null);
   const pdfRef = useRef<HTMLInputElement>(null);
   const imageRef = useRef<HTMLInputElement>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   pagesRef.current = pages;
   indexRef.current = index;
@@ -180,7 +218,7 @@ export function NotebookView({ notebookId, onBack }: Props) {
     (pageId: string, patch: Partial<Page>, recordUndo = true) => {
       const target = pagesRef.current.find((p) => p.id === pageId);
       if (!target) return;
-      if (recordUndo) pushUndo({ pageId, strokes: target.strokes });
+      if (recordUndo) pushUndo({ pageId, strokes: target.strokes, textBlocks: target.textBlocks ?? [] });
       const next = { ...target, ...patch, updatedAt: Date.now() };
       const list = pagesRef.current.map((p) => (p.id === pageId ? next : p));
       pagesRef.current = list;
@@ -195,7 +233,7 @@ export function NotebookView({ notebookId, onBack }: Props) {
       const current = pagesRef.current[indexRef.current];
       if (!current) return;
       const next = { ...current, strokes: [...current.strokes, stroke], updatedAt: Date.now() };
-      pushUndo({ pageId: current.id, strokes: current.strokes });
+      pushUndo({ pageId: current.id, strokes: current.strokes, textBlocks: current.textBlocks ?? [] });
       const list = pagesRef.current.map((p) => (p.id === current.id ? next : p));
       pagesRef.current = list;
       setPages(list);
@@ -213,7 +251,7 @@ export function NotebookView({ notebookId, onBack }: Props) {
       if (nextStrokes.length === current.strokes.length) return;
       const now = performance.now();
       if (now - lastEraseAt.current > 1200) {
-        pushUndo({ pageId: current.id, strokes: current.strokes });
+        pushUndo({ pageId: current.id, strokes: current.strokes, textBlocks: current.textBlocks ?? [] });
       }
       lastEraseAt.current = now;
       const next = { ...current, strokes: nextStrokes, updatedAt: Date.now() };
@@ -230,8 +268,17 @@ export function NotebookView({ notebookId, onBack }: Props) {
     if (!snap) return;
     const pageNow = pagesRef.current.find((p) => p.id === snap.pageId);
     if (!pageNow) return;
-    redoRef.current.push({ pageId: pageNow.id, strokes: pageNow.strokes });
-    const next = { ...pageNow, strokes: snap.strokes, updatedAt: Date.now() };
+    redoRef.current.push({
+      pageId: pageNow.id,
+      strokes: pageNow.strokes,
+      textBlocks: pageNow.textBlocks ?? [],
+    });
+    const next = {
+      ...pageNow,
+      strokes: snap.strokes,
+      textBlocks: snap.textBlocks,
+      updatedAt: Date.now(),
+    };
     const list = pagesRef.current.map((p) => (p.id === pageNow.id ? next : p));
     pagesRef.current = list;
     setPages(list);
@@ -246,8 +293,17 @@ export function NotebookView({ notebookId, onBack }: Props) {
     if (!snap) return;
     const pageNow = pagesRef.current.find((p) => p.id === snap.pageId);
     if (!pageNow) return;
-    undoRef.current.push({ pageId: pageNow.id, strokes: pageNow.strokes });
-    const next = { ...pageNow, strokes: snap.strokes, updatedAt: Date.now() };
+    undoRef.current.push({
+      pageId: pageNow.id,
+      strokes: pageNow.strokes,
+      textBlocks: pageNow.textBlocks ?? [],
+    });
+    const next = {
+      ...pageNow,
+      strokes: snap.strokes,
+      textBlocks: snap.textBlocks,
+      updatedAt: Date.now(),
+    };
     const list = pagesRef.current.map((p) => (p.id === pageNow.id ? next : p));
     pagesRef.current = list;
     setPages(list);
@@ -373,6 +429,186 @@ export function NotebookView({ notebookId, onBack }: Props) {
     setClearOpen(false);
     toast.show('페이지를 비웠습니다. 되돌리기로 복구할 수 있습니다.');
   }, [patchPage, toast]);
+
+  const insertDictation = useCallback(
+    async (value: string, recording: RecordingResult | null) => {
+      const current = pagesRef.current[indexRef.current];
+      const nb = nbRef.current;
+      if (!current || !nb) throw new Error('페이지를 찾을 수 없습니다.');
+
+      const width = Math.max(260, current.width - TEXT_MARGIN * 2);
+      const fontSize = DEFAULT_TEXT_SIZE;
+      const startY = Math.min(
+        current.height - 180,
+        Math.max(current.background ? 104 : 132, pageContentBottom(current) + 36),
+      );
+      const firstMaxHeight = current.height - startY - TEXT_MARGIN;
+      const restMaxHeight = current.height - 120 - TEXT_MARGIN;
+
+      let chunks = paginateText(value, width, fontSize, firstMaxHeight, restMaxHeight);
+      const useCurrent = chunks.length > 0;
+      if (!useCurrent) {
+        chunks = paginateText(value, width, fontSize, restMaxHeight, restMaxHeight);
+      }
+      if (!chunks.length) throw new Error('글이 너무 깁니다.');
+
+      const audioId = recording ? uid('au') : undefined;
+      const audioMeta = audioId ? { id: audioId, duration: recording?.duration ?? 0 } : undefined;
+      const firstText = chunks[0];
+      const rest = chunks.slice(1);
+
+      const newPages: Page[] = [];
+      let firstBlock: TextBlock;
+      let firstPageId: string;
+
+      if (useCurrent) {
+        firstBlock = makeTextBlock(firstText, TEXT_MARGIN, startY, width, fontSize, audioMeta);
+        firstPageId = current.id;
+      } else {
+        const fresh = makePage(nb.id, current.order + 1, nb.template);
+        firstBlock = makeTextBlock(firstText, TEXT_MARGIN, 120, width, fontSize, audioMeta);
+        fresh.textBlocks = [firstBlock];
+        newPages.push(fresh);
+        firstPageId = fresh.id;
+      }
+
+      rest.forEach((chunk) => {
+        const fresh = makePage(nb.id, current.order + 1 + newPages.length, nb.template);
+        fresh.textBlocks = [makeTextBlock(chunk, TEXT_MARGIN, 120, width, fontSize)];
+        newPages.push(fresh);
+      });
+
+      if (recording && audioId) {
+        await saveAudio({
+          id: audioId,
+          notebookId: nb.id,
+          pageId: firstPageId,
+          mime: recording.mime,
+          duration: recording.duration,
+          createdAt: Date.now(),
+          blob: recording.blob,
+        });
+      }
+
+      const prev = pagesRef.current;
+      const currentIndex = indexRef.current;
+      if (useCurrent) {
+        pushUndo({
+          pageId: current.id,
+          strokes: current.strokes,
+          textBlocks: current.textBlocks ?? [],
+        });
+      }
+      const base = [...prev];
+      if (useCurrent) {
+        base[currentIndex] = {
+          ...current,
+          textBlocks: [...(current.textBlocks ?? []), firstBlock],
+          updatedAt: Date.now(),
+        };
+      }
+      const insertAt = currentIndex + 1;
+      const merged = [...base.slice(0, insertAt), ...newPages, ...base.slice(insertAt)];
+      const normalized = merged.map((p, i) => (p.order === i ? p : { ...p, order: i }));
+      const before = new Map(prev.map((p) => [p.id, p]));
+      const changed = normalized.filter((p) => before.get(p.id) !== p);
+
+      pagesRef.current = normalized;
+      setPages(normalized);
+      setIndex(useCurrent ? currentIndex : currentIndex + 1);
+      await savePages(changed);
+      syncPageCount(normalized.length);
+      flashSave();
+    },
+    [flashSave, pushUndo, syncPageCount],
+  );
+
+  const moveTextBlock = useCallback(
+    (block: TextBlock, x: number, y: number) => {
+      const current = pagesRef.current[indexRef.current];
+      if (!current) return;
+      const blocks = (current.textBlocks ?? []).map((item) =>
+        item.id === block.id ? { ...item, x, y, updatedAt: Date.now() } : item,
+      );
+      patchPage(current.id, { textBlocks: blocks });
+    },
+    [patchPage],
+  );
+
+  const openTextEdit = useCallback((block: TextBlock) => {
+    const current = pagesRef.current[indexRef.current];
+    if (!current) return;
+    setEditBlock({ pageId: current.id, block });
+    setEditText(block.text);
+    setEditSize(block.fontSize);
+  }, []);
+
+  const saveTextEdit = useCallback(() => {
+    if (!editBlock) return;
+    const pageNow = pagesRef.current.find((p) => p.id === editBlock.pageId);
+    if (!pageNow) return;
+    const text = editText.trim();
+    if (!text) return;
+    const blocks = (pageNow.textBlocks ?? []).map((item) =>
+      item.id === editBlock.block.id
+        ? { ...item, text, fontSize: editSize, updatedAt: Date.now() }
+        : item,
+    );
+    patchPage(pageNow.id, { textBlocks: blocks });
+    setEditBlock(null);
+  }, [editBlock, editSize, editText, patchPage]);
+
+  const deleteTextBlock = useCallback(
+    (block: TextBlock) => {
+      const current = pagesRef.current[indexRef.current];
+      if (!current) return;
+      const blocks = (current.textBlocks ?? []).filter((item) => item.id !== block.id);
+      patchPage(current.id, { textBlocks: blocks });
+      // 되돌리기로 글을 복구할 수 있도록 녹음 파일은 남겨 둡니다.
+      toast.show('글을 삭제했습니다. 되돌리기로 복구할 수 있습니다.');
+    },
+    [patchPage, toast],
+  );
+
+  const playTextAudio = useCallback(
+    async (block: TextBlock) => {
+      if (!block.audioId) return;
+      const stored = await getAudio(block.audioId);
+      if (!stored) {
+        toast.show('녹음 파일을 찾을 수 없습니다.', 'warn');
+        return;
+      }
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      await preparePlayback();
+      const url = URL.createObjectURL(stored.blob);
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () => {
+        URL.revokeObjectURL(url);
+        if (audioRef.current === audio) audioRef.current = null;
+      };
+      try {
+        await audio.play();
+      } catch {
+        URL.revokeObjectURL(url);
+        if (audioRef.current === audio) audioRef.current = null;
+        toast.show('녹음을 재생하지 못했습니다.', 'warn');
+      }
+    },
+    [toast],
+  );
+
+  const saveDictationAudio = useCallback(
+    async (recording: RecordingResult) => {
+      const ext = audioExtension(recording.mime);
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+      await saveBlob(recording.blob, `${safeFilename(notebook?.title ?? '받아쓰기')}-${stamp}.${ext}`);
+    },
+    [notebook?.title],
+  );
 
   const changeTitle = useCallback((title: string) => {
     const nb = nbRef.current;
@@ -621,6 +857,14 @@ export function NotebookView({ notebookId, onBack }: Props) {
           </button>
           <button
             className="icon-btn"
+            onClick={() => setDictationOpen(true)}
+            aria-label="받아쓰기"
+            title="받아쓰기"
+          >
+            <Icon name="mic" />
+          </button>
+          <button
+            className="icon-btn"
             onClick={() => setExportOpen(true)}
             aria-label="내보내기"
             title="내보내기"
@@ -630,6 +874,7 @@ export function NotebookView({ notebookId, onBack }: Props) {
           <Menu
             items={[
               { label: '페이지 관리', icon: 'page', onSelect: () => setPagesOpen(true) },
+              { label: '받아쓰기', icon: 'mic', onSelect: () => setDictationOpen(true) },
               { label: 'PDF · 이미지 가져오기', icon: 'upload', onSelect: () => setImportOpen(true) },
               {
                 label: settings.fingerDraw ? '손가락 그리기 끄기' : '손가락 그리기 켜기',
@@ -745,6 +990,10 @@ export function NotebookView({ notebookId, onBack }: Props) {
             onCommit={commitStroke}
             onErase={eraseStrokes}
             onScale={setScale}
+            onTextMove={moveTextBlock}
+            onTextEdit={openTextEdit}
+            onTextDelete={deleteTextBlock}
+            onTextPlay={(block) => void playTextAudio(block)}
           />
         ) : null}
 
@@ -987,6 +1236,52 @@ export function NotebookView({ notebookId, onBack }: Props) {
         onConfirm={() => void deletePage()}
       />
 
+      <DictationSheet
+        open={dictationOpen}
+        onClose={() => setDictationOpen(false)}
+        onInsert={insertDictation}
+        onSaveAudio={saveDictationAudio}
+      />
+
+      <Sheet open={Boolean(editBlock)} title="글 편집" onClose={() => setEditBlock(null)}>
+        <textarea
+          className="dictation-text"
+          value={editText}
+          onChange={(e) => setEditText(e.target.value)}
+          rows={8}
+          aria-label="글 내용"
+        />
+        <div className="text-size-row">
+          <span className="opt-label">글자 크기</span>
+          <div className="sizes">
+            {[26, 34, 44, 56].map((size) => (
+              <button
+                key={size}
+                className={`size-dot ${editSize === size ? 'is-on' : ''}`}
+                onClick={() => setEditSize(size)}
+                aria-label={`글자 크기 ${size}`}
+                title={`${size}`}
+              >
+                <span
+                  style={{
+                    width: Math.max(6, Math.round(size / 3)),
+                    height: Math.max(6, Math.round(size / 3)),
+                  }}
+                />
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="row-end">
+          <button className="btn ghost" onClick={() => setEditBlock(null)}>
+            취소
+          </button>
+          <button className="btn solid" onClick={saveTextEdit} disabled={!editText.trim()}>
+            저장
+          </button>
+        </div>
+      </Sheet>
+
       {busy ? (
         <div className="busy-veil" role="alert">
           <div className="busy-card">
@@ -1013,6 +1308,7 @@ function PageThumb({ page, width }: { page: Page; width: number }) {
     if (!ctx) return;
     drawPaper(ctx, page.template, scale, page.width, page.height);
     drawStrokes(ctx, page.strokes, scale);
+    drawTextBlocks(ctx, page.textBlocks, scale);
     if (page.background) {
       loadImage(page.background)
         .then((img) => {
@@ -1020,6 +1316,7 @@ function PageThumb({ page, width }: { page: Page; width: number }) {
           drawPaper(ctx, page.template, scale, page.width, page.height);
           drawImageContain(ctx, img, scale, page.width, page.height);
           drawStrokes(ctx, page.strokes, scale);
+          drawTextBlocks(ctx, page.textBlocks, scale);
         })
         .catch(() => {});
     }

@@ -210,14 +210,16 @@ export function Toggle({
   onChange,
   label,
   hint,
+  disabled = false,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   label: string;
   hint?: string;
+  disabled?: boolean;
 }) {
   return (
-    <label className="toggle-row">
+    <label className={`toggle-row ${disabled ? 'is-disabled' : ''}`}>
       <span className="toggle-text">
         <span className="toggle-label">{label}</span>
         {hint ? <span className="toggle-hint">{hint}</span> : null}
@@ -227,6 +229,7 @@ export function Toggle({
         role="switch"
         aria-checked={checked}
         aria-label={label}
+        disabled={disabled}
         className={`switch ${checked ? 'is-on' : ''}`}
         onClick={() => onChange(!checked)}
       >
